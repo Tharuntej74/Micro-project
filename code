@@ -1,125 +1,95 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from keras.models import load_model
-from flask import Flask, render_template, request, send_file
-import datetime as dt
-import yfinance as yf
-from sklearn.preprocessing import MinMaxScaler
-import os
-plt.style.use("fivethirtyeight")
+from langchain.prompts import (
+    ChatPromptTemplate, 
+    HumanMessagePromptTemplate, 
+    MessagesPlaceholder, 
+    SystemMessagePromptTemplate,
+)
 
-app = Flask(__name__)
+from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.schema.output_parser import StrOutputParser
 
-# Load the model (make sure your model is in the correct path)
-model = load_model('stock_dl_model.h5')
+import streamlit as st
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    if request.method == 'POST':
-        stock = request.form.get('stock')
-        if not stock:
-            stock = 'POWERGRID.NS'  # Default stock if none is entered
-        
-        # Define the start and end dates for stock data
-        start = dt.datetime(2000, 1, 1)
-        end = dt.datetime(2024, 10, 1)
-        
-        # Download stock data
-        df = yf.download(stock, start=start, end=end)
-        
-        # Descriptive Data
-        data_desc = df.describe()
-        
-        # Exponential Moving Averages
-        ema20 = df.Close.ewm(span=20, adjust=False).mean()
-        ema50 = df.Close.ewm(span=50, adjust=False).mean()
-        ema100 = df.Close.ewm(span=100, adjust=False).mean()
-        ema200 = df.Close.ewm(span=200, adjust=False).mean()
-        
-        # Data splitting
-        data_training = pd.DataFrame(df['Close'][0:int(len(df)*0.70)])
-        data_testing = pd.DataFrame(df['Close'][int(len(df)*0.70): int(len(df))])
-        
-        # Scaling data
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        data_training_array = scaler.fit_transform(data_training)
-        
-        # Prepare data for prediction
-        past_100_days = data_training.tail(100)
-        final_df = past_100_days.append(data_testing, ignore_index=True)
-        input_data = scaler.fit_transform(final_df)
-        
-        x_test, y_test = [], []
-        for i in range(100, input_data.shape[0]):
-            x_test.append(input_data[i - 100:i])
-            y_test.append(input_data[i, 0])
-        x_test, y_test = np.array(x_test), np.array(y_test)
+# Streamlit app configuration
+st.set_page_config(page_title="Programming Assistant", page_icon="")
 
-        # Make predictions
-        y_predicted = model.predict(x_test)
-        
-        # Inverse scaling for predictions
-        scaler = scaler.scale_
-        scale_factor = 1 / scaler[0]
-        y_predicted = y_predicted * scale_factor
-        y_test = y_test * scale_factor
-        
-        # Plot 1: Closing Price vs Time Chart with 20 & 50 Days EMA
-        fig1, ax1 = plt.subplots(figsize=(12, 6))
-        ax1.plot(df.Close, 'y', label='Closing Price')
-        ax1.plot(ema20, 'g', label='EMA 20')
-        ax1.plot(ema50, 'r', label='EMA 50')
-        ax1.set_title("Closing Price vs Time (20 & 50 Days EMA)")
-        ax1.set_xlabel("Time")
-        ax1.set_ylabel("Price")
-        ax1.legend()
-        ema_chart_path = "static/ema_20_50.png"
-        fig1.savefig(ema_chart_path)
-        plt.close(fig1)
-        
-        # Plot 2: Closing Price vs Time Chart with 100 & 200 Days EMA
-        fig2, ax2 = plt.subplots(figsize=(12, 6))
-        ax2.plot(df.Close, 'y', label='Closing Price')
-        ax2.plot(ema100, 'g', label='EMA 100')
-        ax2.plot(ema200, 'r', label='EMA 200')
-        ax2.set_title("Closing Price vs Time (100 & 200 Days EMA)")
-        ax2.set_xlabel("Time")
-        ax2.set_ylabel("Price")
-        ax2.legend()
-        ema_chart_path_100_200 = "static/ema_100_200.png"
-        fig2.savefig(ema_chart_path_100_200)
-        plt.close(fig2)
-        
-        # Plot 3: Prediction vs Original Trend
-        fig3, ax3 = plt.subplots(figsize=(12, 6))
-        ax3.plot(y_test, 'g', label="Original Price", linewidth = 1)
-        ax3.plot(y_predicted, 'r', label="Predicted Price", linewidth = 1)
-        ax3.set_title("Prediction vs Original Trend")
-        ax3.set_xlabel("Time")
-        ax3.set_ylabel("Price")
-        ax3.legend()
-        prediction_chart_path = "static/stock_prediction.png"
-        fig3.savefig(prediction_chart_path)
-        plt.close(fig3)
-        
-        # Save dataset as CSV
-        csv_file_path = f"static/{stock}_dataset.csv"
-        df.to_csv(csv_file_path)
+# Title and initial description
+st.title('AI Chatbot')
+st.write("This chatbot is created by Tharun teja ")
+st.markdown("Hello! I'm your AI programming assistant. How can I assist you today?")
+st.image("https://images.creativemarket.com/0.1.0/ps/1068169/6250/6250/m1/fpnw/wm0/programming-.jpg?1457490303&s=525e71dae5c577b611a1b5499c6eaa5e", use_container_width=True)
 
-        # Return the rendered template with charts and dataset
-        return render_template('index.html', 
-                               plot_path_ema_20_50=ema_chart_path, 
-                               plot_path_ema_100_200=ema_chart_path_100_200, 
-                               plot_path_prediction=prediction_chart_path, 
-                               data_desc=data_desc.to_html(classes='table table-bordered'),
-                               dataset_link=csv_file_path)
+# Function to get and store the API key securely in session state
+def get_api_key():
+    if "api_key" not in st.session_state:
+        st.session_state["api_key"] = "AIzaSyDisQMdCHV3VKpixDVJVQ6AEcxFNFDqqjA"
+    api_key = st.text_input("Enter your Google API Key:", type="password", key="api_key")
+    return api_key
 
-    return render_template('index.html')
+# Prompt user for API key input
+api_key = get_api_key()
 
-@app.route('/download/<filename>')
-def download_file(filename):
-    return send_file(f"static/{filename}", as_attachment=True)
+# Ensure the API key is available
+if not api_key:
+    st.warning("Please enter your API Key to continue.")
+else:
+    # Create a prompt template for programming assistant
+    prompt = ChatPromptTemplate(
+        messages=[
+            SystemMessagePromptTemplate.from_template(
+                "You are a programming assistant. Please respond to programming-related queries only."
+            ),
+            MessagesPlaceholder(variable_name="chat_history"),
+            HumanMessagePromptTemplate.from_template("{question}"),
+        ]
+    )
 
-if __name__ == '__main__':
-    app.run(debug=True)
+    # Initialize message history
+    msgs = StreamlitChatMessageHistory(key="langchain_messages")
+
+    # Set up the Google AI model using the provided API key
+    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
+
+    # Combine prompt, model, and output parser
+    chain = prompt | model | StrOutputParser()
+
+    # Combine chain with history for maintaining session
+    chain_with_history = RunnableWithMessageHistory(
+        chain,
+        lambda session_id: msgs,
+        input_messages_key="question",
+        history_messages_key="chat_history",
+    )
+
+    # Get user input
+    user_input = st.text_input("Enter your programming question:", "")
+
+    # Check if user input is provided
+    if user_input:
+        st.chat_message("human").write(user_input)
+
+        # Check if the question is programming-related
+        if any(keyword in user_input.lower() for keyword in ["python", "programming", "code", "debug", "algorithm", "development", "syntax"]):
+            # Assistant's response
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                full_response = ""
+
+                # Configuration dictionary
+                config = {"configurable": {"session_id": "any"}}
+
+                # Get response from AI model
+                response = chain_with_history.stream({"question": user_input}, config)
+
+                # Stream and display response in real-time
+                for res in response:
+                    full_response += res or ""
+                    message_placeholder.markdown(full_response + "|")
+                    message_placeholder.markdown(full_response)
+        else:
+            # If the question is not programming-related
+            st.chat_message("assistant").write("I am here only to assist with programming-related queries.")
+    else:
+        st.warning("Please enter your question.")
